@@ -1,0 +1,113 @@
+```
+
+# Berlin - Hamburg
+
+```{r}
+
+# shape file url https://data.deutschebahn.com/dataset/geo-strecke
+# hier genutzt: Daten von 2018 https://data.deutschebahn.com/dataset/geo-strecke/resource/a81c0ad0-dadb-4391-8e1d-c0a8087b5d57
+# entpacken in ordner ../data/raw/
+
+# shape-file importieren, Format stringasfactors abwählen, stattdessen character
+# in data frame umwandeln, um geometry vektor löschen zu können - geht sonst nicht
+data_table = st_read("../data/raw/strecken_polyline.shp", stringsAsFactors = F) %>% 
+  as.data.frame() %>% 
+  select(-geometry)
+
+# strecke mit id 6100 selektieren, # strecke mit id 6107 selektieren 
+# für strecke 6107 filtern bis_km_i < 102570095 (nur die abschnitte zwischen hbf und spandau)
+# für strecke 6100 filtern bis_km_i < 128750000 (nicht bis altona, sondern nur bis hbf)
+# doppelte Einträge eliminieren, Änderung der Geschwindigkeit gegenüber Vorabschnitt kennzeichnen
+berlin_hamburg <- data_table %>% 
+  filter(strecke_nr == 6100 | strecke_nr == 6107) %>% 
+  select(strecke_nr, laenge, von_km_i, bis_km_i, von_km_l, bis_km_l, bahnnutzun, geschwindi, bahnart, strecke_ku) %>%
+  arrange(desc(strecke_nr), von_km_i) %>% 
+  filter( (bis_km_i < 102570095 & strecke_nr == 6107) | von_km_i < 128750000 & strecke_nr == 6100) %>%
+  distinct(laenge, von_km_l, bis_km_l, .keep_all = T) %>% 
+  mutate(geschwindi_aenderung = ifelse(lag(geschwindi, default = "Startbahnhof") == geschwindi, F, T)) %>% 
+  mutate(aenderung = ifelse(geschwindi_aenderung == T, 1, 0)) %>% 
+print()  
+
+# Länge 286,61 km 
+
+# aufeinanderfolgende Abschnitte mit gleicher Höchstgeschwindigkeit mit gleicher ID versehen 
+for (entry in 1:nrow(berlin_hamburg)){
+  print(entry)
+  berlin_hamburg$abschnitt[entry] = sum(berlin_hamburg$aenderung[1:entry])
+}
+
+# aufeinanderfolgende Abschnitte mit gleicher Höchstgeschwindigkeit zusammenfassen, ungroup, um grouped zu beseitigen, dass lag und lead Probleme macht
+berlin_hamburg_gruppiert = berlin_hamburg %>% 
+  group_by(abschnitt, geschwindi) %>% 
+  summarise(laenge_kombi = sum(laenge)) %>% 
+  ungroup() %>% 
+  print()
+
+# v_max als Zahl einfügen und v_max_next, spalten v_in und v_out einfügen 
+testbh = berlin_hamburg_gruppiert %>% 
+  mutate(geschwindi = gsub(".*bis", "", geschwindi)) %>% 
+  mutate(v_max = parse_number(geschwindi)) %>% 
+  print()  
+
+testbh <- testbh %>%   
+  mutate(v_max_next = lead(v_max, default = 0), v_in = 0, v_out = 0, zeit = 0) %>% 
+  print()
+
+# fahrzeit berlin - hamburg ausrechnen, dabei negative strecken und zeiten möglich
+# wenn bremsweg oder beschleunigungsweg zu kurz ist
+testbh_neu <- testbh %>%
+  select(abschnitt, laenge_kombi, v_max, v_max_next, v_in, v_out) %>% 
+  mutate(v_out = ifelse(v_max_next < v_max, v_max_next, v_max)) %>%
+  mutate(v_in = ifelse(abschnitt == 1, 0, lag(v_out))) %>% 
+  rowwise() %>%
+  mutate(zeit_beschl = ifelse(v_in < v_max, beschleunigungszeit(v_in, v_max), 0)) %>%
+  mutate(weg_beschl = ifelse(v_in < v_max, beschleunigungsweg(v_in, v_max), 0)) %>%
+  mutate(zeit_brems = ifelse(v_max > v_max_next, bremszeit(v_max, v_max_next), 0)) %>%
+  mutate(weg_brems = ifelse(v_max > v_max_next, bremsweg(v_max, v_max_next), 0)) %>%
+  mutate(weg_normal = laenge_kombi - weg_beschl - weg_brems) %>%
+  mutate(zeit_normal = weg_normal * 3.6 / v_max) %>%
+  mutate(zeit = zeit_beschl + zeit_brems + zeit_normal) %>%
+  mutate(weg = weg_beschl + weg_brems + weg_normal) %>%
+  print()
+
+# v_in_neu berechnen für fall dass bremsweg eines abschnitts zu kurz ist und diesen Wert v_in zuweisen
+testbh_1 <- testbh_neu %>%
+  mutate(v_in_neu = ifelse((weg_beschl == 0 & weg_normal < 0), v_out + 3.6*0.5*((sqrt( 2*0.5*laenge_kombi + v_out*v_out/(3.6*3.6)) - v_out/3.6)/0.5), 0)) %>%
+  mutate(v_in = ifelse(v_in_neu > 0, v_in_neu, v_in)) %>%
+  mutate(v_max = ifelse(v_in_neu > 0, v_in_neu, v_max)) %>%
+  print()
+
+# v_out in abschnitt auf v_in des folgeabschnitts korrigieren, beim letzten default = 0 
+testbh_2 <- testbh_1 %>% 
+  ungroup() %>% 
+  mutate(v_out = lead(v_in, default = 0)) %>%
+  mutate(v_max_next = lead(v_max, default = 0)) %>% 
+  print()
+
+# v_out_neu berechnen für fall dass beschleunigungsweg zu kurz ist, a als variable zuweisen
+testbh_3 <- testbh_2 %>%
+  mutate(a = ifelse(v_in < 100, 0.5, ifelse(v_in < 200, 0.3, 0.15))) %>% 
+  mutate(v_out_neu = ifelse((weg_brems == 0 & weg_normal < 0), 3.6*sqrt( 2*a*laenge_kombi + v_in*v_in/(3.6*3.6) ), 0))%>%
+  mutate(v_out = ifelse(v_out_neu > 0, v_out_neu, v_out)) %>% 
+  mutate(v_max = ifelse(v_out_neu > 0, v_out_neu, v_max)) %>% 
+  print()
+
+# v_in korrigieren falls v_in_neu im vorherigen segment größer null ist
+testbh_4 <- testbh_3 %>% 
+  ungroup() %>% 
+  mutate(v_in = lag(v_out, default = 0)) %>%
+  print()
+
+# weg erneut mit korrigierten Werten für v_in und v_out durchrechnen
+testbh_5 <-  testbh_4 %>%
+  select(abschnitt, laenge_kombi, v_max, v_max_next, v_in, v_out) %>%
+  rowwise() %>%
+  mutate(zeit_beschl = ifelse(v_in < v_max, beschleunigungszeit(v_in, v_max), 0)) %>%
+  mutate(weg_beschl = ifelse(v_in < v_max, beschleunigungsweg(v_in, v_max), 0)) %>%
+  mutate(zeit_brems = ifelse(v_max > v_max_next, bremszeit(v_max, v_max_next), 0)) %>%
+  mutate(weg_brems = ifelse(v_max > v_max_next, bremsweg(v_max, v_max_next), 0)) %>%
+  mutate(weg_normal = laenge_kombi - weg_beschl - weg_brems) %>%
+  mutate(zeit_normal = weg_normal * 3.6 / v_max) %>%
+  mutate(zeit = round(zeit_beschl + zeit_brems + zeit_normal)) %>%
+  mutate(weg = round(weg_beschl + weg_brems + weg_normal)) %>%
+  print()
