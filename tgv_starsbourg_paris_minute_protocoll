@@ -1,0 +1,150 @@
+
+
+```
+
+# Strasbourg Paris im Minutenprotokoll
+
+```{r}
+
+# Geschwindigkeiten anpassen, so dass reale Fahrzeiten erreicht werden
+# reale Fahrzeit ist 110, theoretisch mögliche Fahrzeit bei full speed ist 97
+# daher werden alle Höchstgeschwindigkeiten gesenkt
+# um den faktor 97/110 
+
+testsp_1 <-  strasbourg_paris_neu %>%
+  #karlsruhe
+  mutate(v_max = v_max * 97/110) %>% 
+  mutate(v_max_next = v_max_next * 97/110) %>% 
+  mutate(v_in = v_in * 97/110) %>%
+  mutate(v_out = v_out * 97/110) %>%
+  print()  
+
+# weg erneut mit korrigierten Werten für v_in und v_out durchrechnen
+
+testsp_2 <-  testsp_1 %>%
+  select(laenge_kombi, v_max, v_max_next, v_in, v_out) %>%
+  rowwise() %>%
+  mutate(zeit_beschl = ifelse(v_in < v_max, beschleunigungszeit(v_in, v_max), 0)) %>%
+  mutate(weg_beschl = ifelse(v_in < v_max, beschleunigungsweg(v_in, v_max), 0)) %>%
+  mutate(zeit_brems = ifelse(v_max > v_max_next, bremszeit(v_max, v_max_next), 0)) %>%
+  mutate(weg_brems = ifelse(v_max > v_max_next, bremsweg(v_max, v_max_next), 0)) %>%
+  mutate(weg_normal = laenge_kombi - weg_beschl - weg_brems) %>%
+  mutate(zeit_normal = weg_normal * 3.6 / v_max) %>%
+  mutate(zeit = round(zeit_beschl + zeit_brems + zeit_normal)) %>%
+  mutate(weg = round(weg_beschl + weg_brems + weg_normal)) %>%
+  print()
+
+# 447 km in 6578 s = 109,6 Minuten - passt so!
+
+# kumulierte wege und zeiten als neue spalte einfügen
+route_strasbourg_paris <- testsp_2 %>% 
+  ungroup() %>% 
+  mutate(zeit_kum = cumsum(zeit)) %>%
+  mutate(weg_kum = cumsum(weg)) %>%    
+  print()
+
+# tabelle für ergebnisse vorbereiten
+stats_per_second4 = tibble(
+  section_id = as.numeric(),
+  time = as.numeric(),
+  speed = as.numeric(),
+  distance = as.numeric(),
+  status = as.character()
+)
+
+# Abschnitt für Abschnitt im Abstand von einer Sekunde v, s ausrechnen und in Tabelle schreiben - mit Funktionen beschl_v und beschl_s
+for (section_id in 1:nrow(route_strasbourg_paris)){   
+   section = route_strasbourg_paris[section_id,]
+   print (section_id)  
+   
+   for (second in 1:round(section$zeit)){       
+    #print(minute)
+      speed = 1
+      distance = 1
+      status = "nichts"
+    
+# weder bremsen noch beschleunigen      
+      
+    if (section$zeit_beschl == 0 & section$zeit_brems == 0) { 
+      speed = section$v_max
+      distance = section$v_max * second / 3.6 + section$weg_kum - section$weg
+      status = "konstant" }
+      
+# nur beschleunigen - nicht bremsen      
+      
+    if (section$zeit_beschl > 0 & section$zeit_brems == 0) { 
+      
+      if (second <= section$zeit_beschl) {  
+        speed = beschl_v(section$v_in, section$v_max, second)
+        distance = beschl_s(section$v_in, section$v_max, second) + section$weg_kum - section$weg
+        status = "beschleunigung" }
+     
+      if (second > section$zeit_beschl)  {
+        speed = section$v_max
+        distance = section$weg_beschl + section$v_max * (second - section$zeit_beschl) / 3.6 + section$weg_kum - section$weg
+        status = "konstant" }
+    }  
+      
+# nur bremsen - keine beschleunigung      
+      
+    if (section$zeit_beschl == 0 & section$zeit_brems > 0) {
+      
+      if (second <= section$zeit_normal) {
+        speed = section$v_in
+        distance = section$v_in * second / 3.6 + section$weg_kum - section$weg
+        status = "konstant"}
+      
+      if (second > section$zeit_normal) {
+        speed = section$v_in - 0.5 * (second - section$zeit_normal) * 3.6 
+        distance = section$v_in * second / 3.6 - 0.5 * 0.5 * (second - section$zeit_normal)^2 + section$weg_kum - section$weg
+        status = "bremsen" }
+    }      
+    
+# beschleunigen und bremsen      
+    
+    if (section$zeit_beschl > 0 & section$zeit_brems > 0) { 
+      
+      if(second <= section$zeit_beschl) {        #beschleunigungsphase
+        
+        speed = beschl_v(section$v_in, section$v_max, second)
+        distance = beschl_s(section$v_in, section$v_max, second) + section$weg_kum - section$weg
+        status = "beschleunigung" }        
+  
+      if (second > section$zeit_beschl & second <= section$zeit_beschl + section$zeit_normal) {        #konstante phase
+        
+        speed = section$v_max
+        distance = section$weg_beschl + section$v_max * (second - section$zeit_beschl) / 3.6 + section$weg_kum - section$weg
+        status = "konstant"}
+      
+      if (second > section$zeit_beschl + section$zeit_normal) {      #bremsphase
+        
+        speed = section$v_max - 0.5 * (second - section$zeit_normal - section$zeit_beschl) * 3.6
+        distance = section$weg_beschl + section$weg_normal + section$v_max * (second - section$zeit_normal - section$zeit_beschl) / 3.6 - 0.25 * (second - section$zeit_normal - section$zeit_beschl)^2 + section$weg_kum - section$weg
+        status = "bremsen" }
+    
+     }  
+      
+      # ergebnisse zu tabellenzeile machen und zur großen tabelle hinzufügen
+      
+     results = tibble(
+      section_id = section_id,
+      time = second + round(section$zeit_kum - section$zeit),
+      speed = speed,
+      distance = distance,
+      status = status
+    )
+    
+    stats_per_second4 = stats_per_second4 %>% 
+      bind_rows(results)
+    }  
+} 
+
+strasbourg_paris_minuten <- stats_per_second4 %>% 
+  filter(time/60 == round(time/60)) %>%
+  mutate(minute = round(time/60)) %>% 
+  select(section_id, minute, speed, distance, status) %>% 
+  write_csv("../data/processed/strasbourg_paris_minuten.csv") %>% 
+  print()
+
+
+```
