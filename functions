@@ -1,0 +1,126 @@
+---
+title: "ICE Simulation"
+output:
+  html_notebook:
+    css: lib/R/style.css
+    ###### show/hide code chunks and table of content, depending on markdown usecase
+    # code_folding: hide
+    # toc: true
+    # toc_float: true
+    # number_sections: true
+  html_document:
+    css: lib/R/style.css
+---
+
+```{r include = F}
+######################### Package management #########################
+## install and load needs, if not yet present
+install.packages("needs")
+library(needs)
+
+# packages used in this markdown document
+needs(tidyverse, sf)
+
+# Arbeitsverzeichnis = Ort, an dem dieses Skript gespeichert ist (funktioniert nur in RStudio)
+# setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+
+# Unterordner für Datensätze und Plots erstellen
+# ifelse(!dir.exists(file.path(".", "data")), dir.create(file.path(".", "data")), FALSE)
+# ifelse(!dir.exists(file.path(".", "plots")), dir.create(file.path(".", "plots")), FALSE)
+
+#Funktionen bremszeit bremsweg beschleunigungszeit beschleunigungsweg
+
+```{r}
+# funktion für bremszeit
+bremszeit = function(v_section, v_next_section){
+  time = (v_section - v_next_section) / (3.6 * 0.5)
+  return(time)
+}  
+  
+# funktion für bremsweg
+bremsweg = function(v_section, v_next_section){
+  time = (v_section - v_next_section) / (3.6 * 0.5)
+  weg = (0.25 * time * time) + (time * v_next_section / 3.6)
+  return(weg)
+}  
+
+# funktion für beschleunigungszeit
+beschleunigungszeit = function(v_aktuell, v_section){
+  if (v_section <= 100){ 
+   # print("ich bin in Bedingung 1")
+    time = (v_section - v_aktuell) / (3.6 * 0.5) }
+  if (v_aktuell >= 100 & v_section <= 200){ 
+  #  print("ich bin in Bedingung 2")
+    time = (v_section - v_aktuell) / (3.6 * 0.3) }
+  if (v_aktuell >= 200){ 
+  #  print("ich bin in Bedingung 3")
+    time = (v_section - v_aktuell) / (3.6 * 0.15) }
+  if (v_aktuell <= 100 & v_section <= 200 & v_section > 100){ 
+  #  print("ich bin in Bedingung 4")
+    time = ((v_section - 100) / (3.6 * 0.3)) + ((100 - v_aktuell) / (3.6 * 0.5)) }
+  if (v_aktuell <= 100 & v_section > 200){ 
+  #  print("ich bin in Bedingung 5")
+    time = ((100 - v_aktuell) / (3.6 * 0.5)) + (100 / (3.6 * 0.3)) + ((v_section - 200) / (3.6 * 0.15)) }
+  if (v_aktuell >= 100 & v_aktuell < 200  & v_section > 200){ 
+  #  print("ich bin in Bedingung 6")
+    time = ((v_section - 200) / (3.6 * 0.15)) + (200 - v_aktuell) / (3.6 * 0.3) }
+#  else {print("fehler")}
+  return(time)
+}  
+
+# funktion für beschleunigungsweg
+beschleunigungsweg = function(v_aktuell, v_section){
+  if (v_section <= 100){ weg = 0.5 * 0.5 * (beschleunigungszeit(v_aktuell, v_section))^2 + (v_aktuell * beschleunigungszeit(v_aktuell, v_section) / 3.6) }
+  if (v_aktuell >= 100 & v_section <= 200){ weg = 0.3 * 0.5 * (beschleunigungszeit(v_aktuell, v_section))^2 + (v_aktuell * beschleunigungszeit(v_aktuell, v_section) / 3.6) }
+  if (v_aktuell >= 200){ weg = 0.15 * 0.5 * (beschleunigungszeit(v_aktuell, v_section))^2 + (v_aktuell * beschleunigungszeit(v_aktuell, v_section) / 3.6) }
+  if (v_aktuell < 100 & v_section <= 200 & v_section > 100){ weg = 0.5 * 0.5 * (beschleunigungszeit(v_aktuell, 100))^2 + 0.3 * 0.5 * (beschleunigungszeit(100, v_section))^2 + (v_aktuell * beschleunigungszeit(v_aktuell, 100) / 3.6) +  (100 * beschleunigungszeit(100, v_section) / 3.6) }
+  if (v_aktuell < 100 & v_section > 200){ weg = 0.5 * 0.5 * (beschleunigungszeit(v_aktuell, 100))^2 + 0.3 * 0.5 * (beschleunigungszeit(100, 200))^2 + 0.15 * 0.5 * (beschleunigungszeit(200, v_section))^2 + (v_aktuell * (beschleunigungszeit(v_aktuell, 100) / 3.6)) + (100 * (beschleunigungszeit(100, 200) / 3.6)) + (200 * (beschleunigungszeit(200, v_section) / 3.6)) }
+  if (v_aktuell >= 100 & v_aktuell < 200  & v_section > 200){ weg = (0.3 * 0.5 * (beschleunigungszeit(v_aktuell, 200))^2) + (0.15 * 0.5 * (beschleunigungszeit(200, v_section))^2) + (v_aktuell * beschleunigungszeit(v_aktuell, 200) / 3.6) + (200 * beschleunigungszeit(200, v_section) / 3.6) }
+#  else {print("fehler")}
+  return(weg)
+}  
+
+# funktion für beschleunigungsgeschwindigkeit in abhängigkeit von der zeit beim tracken 
+beschl_v = function(v_aktuell, v_section, t){
+  if (v_section <= 100) { v = 0.5 * t * 3.6 + v_aktuell }
+  if (v_aktuell >= 100 & v_section <= 200) { v = 0.3 * t * 3.6 + v_aktuell }
+  if (v_aktuell >= 200) { v = 0.15 * t * 3.6 + v_aktuell }
+  if (v_aktuell < 100 & v_section <= 200 & v_section > 100){ 
+    if (t <= beschleunigungszeit(v_aktuell, 100)) { v = 0.5 * t * 3.6 + v_aktuell }
+    if (t >  beschleunigungszeit(v_aktuell, 100)) { v = 0.3 * (t - beschleunigungszeit(v_aktuell, 100)) * 3.6 + 100 }
+  }
+  if (v_aktuell >= 100 & v_aktuell < 200  & v_section > 200){
+    if (t <= beschleunigungszeit(v_aktuell, 200)) { v = 0.3 * t * 3.6 + v_aktuell }
+    if (t >  beschleunigungszeit(v_aktuell, 200)) { v = 0.15 * (t - beschleunigungszeit(v_aktuell, 200)) * 3.6 + 200 }
+  }
+  if (v_aktuell < 100 & v_section > 200){
+    if (t <= beschleunigungszeit(v_aktuell, 100)) { v = 0.5 * t * 3.6 + v_aktuell }
+    if (t >  beschleunigungszeit(v_aktuell, 100) & t <= beschleunigungszeit(v_aktuell, 200)) { v = 0.3 * (t - beschleunigungszeit(v_aktuell, 100)) * 3.6 + 100 }
+    if (t >  beschleunigungszeit(v_aktuell, 200)) { v = 0.15 * (t - beschleunigungszeit(v_aktuell, 200)) * 3.6 + 200 }
+  }
+
+  return(v)
+}  
+
+# funktion für beschleunigungsweg in abhängigkeit von der zeit beim tracken 
+beschl_s = function(v_aktuell, v_section, t){
+  if (v_section <= 100) { s = 0.5 * 0.5 * t^2 + v_aktuell * t / 3.6 }
+  if (v_aktuell >= 100 & v_section <= 200) { s = 0.3 * 0.5 * t^2 + v_aktuell * t / 3.6 }
+  if (v_aktuell >= 200) { s = 0.15 * 0.5 * t^2 + v_aktuell * t / 3.6 }
+  if (v_aktuell < 100 & v_section <= 200 & v_section > 100){ 
+    if (t <= beschleunigungszeit(v_aktuell, 100)) { s = 0.5 * 0.5 * t^2 + v_aktuell * t / 3.6 }
+    if (t >  beschleunigungszeit(v_aktuell, 100)) { s = 0.3 * 0.5 * (t - beschleunigungszeit(v_aktuell, 100))^2 + 100 * (t - beschleunigungszeit(v_aktuell, 100)) / 3.6 +  beschleunigungsweg(v_aktuell, 100)}
+  }
+  if (v_aktuell >= 100 & v_aktuell < 200  & v_section > 200){
+    if (t <= beschleunigungszeit(v_aktuell, 200)) { s = 0.3 * 0.5 * t^2 + v_aktuell * t / 3.6 }
+    if (t >  beschleunigungszeit(v_aktuell, 200)) { s = 0.15 * 0.5 * (t - beschleunigungszeit(v_aktuell, 200))^2 + 200 * (t - beschleunigungszeit(v_aktuell, 200)) / 3.6 +  beschleunigungsweg(v_aktuell, 200) }
+  }
+  if (v_aktuell < 100 & v_section > 200){
+    if (t <= beschleunigungszeit(v_aktuell, 100)) { s = 0.5 * 0.5 * t^2 + v_aktuell * t / 3.6 }
+    if (t >  beschleunigungszeit(v_aktuell, 100) & t <= beschleunigungszeit(v_aktuell, 200)) { 0.3 * 0.5 * (t - beschleunigungszeit(v_aktuell, 100))^2 + 100 * (t - beschleunigungszeit(v_aktuell, 100)) / 3.6 +  beschleunigungsweg(v_aktuell, 100) }
+    if (t >  beschleunigungszeit(v_aktuell, 200)) { s = 0.15 * 0.5 * (t - beschleunigungszeit(v_aktuell, 200))^2 + 200 * (t - beschleunigungszeit(v_aktuell, 200)) / 3.6 +  beschleunigungsweg(v_aktuell, 200) }
+  }
+
+  return(s)
+}  
+
