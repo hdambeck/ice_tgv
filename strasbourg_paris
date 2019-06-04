@@ -1,0 +1,63 @@
+```
+
+# SNCF TGV Strasbourg - Paris-Est
+
+```{r}
+
+# daten vom open data portal der sncf herunterladen https://ressources.data.sncf.com/explore/?sort=modified 
+# https://ressources.data.sncf.com/explore/?sort=modified&q=reseau+lgv
+# hier csv mit allen sncf Strecken mit Höchstgeschwindigkeit herunterladen
+# https://data.sncf.com/explore/dataset/vitesse-maximale-nominale-sur-ligne/information/
+# und in Ordner ../data/raw/ speichern
+
+data_sncf_LGV <- read.csv("../data/raw/vitesse-maximale-nominale-sur-ligne.csv", header=TRUE, sep=";")
+
+data_sncf_LGV %>% 
+  print()
+
+# strecken nach namen und abschnitten sortieren 
+LGV = data_sncf_LGV %>% 
+  select(CODE_LIGNE, IDRESEAU, PK_DEBUT, PK_FIN, LIBELLE_LI, VMAX) %>%
+  mutate(PK_DEBUT = as.character(PK_DEBUT), PK_FIN = as.character(PK_FIN), LIBELLE_LI = as.character(LIBELLE_LI)) %>% 
+  mutate(laenge = parse_number(PK_FIN)*1000 + parse_number(substr(PK_FIN, 5, 7)) - parse_number(PK_DEBUT)*1000 - parse_number(substr(PK_DEBUT, 5, 7))) %>%
+  #mutate(meter =  parse_number(substr(PK_FIN, 5, 7)) - parse_number(substr(PK_DEBUT, 5, 7)))  %>% 
+  arrange(LIBELLE_LI, PK_DEBUT) %>% 
+  print()
+
+strasbourg_paris <- LGV %>% 
+  filter(CODE_LIGNE == 1000 & IDRESEAU == 60000149709 | CODE_LIGNE == 70000 & parse_number(PK_DEBUT) < 17 | CODE_LIGNE == 5000 | CODE_LIGNE == 146000 & IDRESEAU == 60000213608) %>%
+  #filter(CODE_LIGNE == 830000 & parse_number(PK_DEBUT) > 849 ) %>%
+  as_tibble() %>% 
+  mutate(CODE_LIGNE = ifelse(CODE_LIGNE == 70000, 2000, CODE_LIGNE)) %>%
+  rename(v_max = VMAX, laenge_kombi = laenge) %>% 
+  mutate(laenge_kombi = ifelse(IDRESEAU == 60000071725, 11989, laenge_kombi)) %>% 
+  arrange(CODE_LIGNE, PK_DEBUT) %>%
+  print()
+
+# Strasbourg - Paris-Est sind 447 km - Zeit dafür 1:50 - das entspricht 244 km/h
+
+strasbourg_paris <- strasbourg_paris %>%   
+  mutate(v_max_next = lead(v_max, default = 0), v_in = 0, v_out = 0, zeit = 0) %>% 
+  print()
+
+# fahrzeit paris - marseille ausrechnen, dabei negative strecken und zeiten möglich
+# wenn bremsweg oder bschenleunigungsweg zu kurz ist
+strasbourg_paris_neu <- strasbourg_paris %>%
+  select(CODE_LIGNE, IDRESEAU, laenge_kombi, v_max, v_max_next, v_in, v_out) %>% 
+  mutate(v_out = ifelse(v_max_next < v_max, v_max_next, v_max)) %>%
+  mutate(v_in = ifelse(IDRESEAU == 60000149709, 0, lag(v_out))) %>% 
+  rowwise() %>%
+  mutate(zeit_beschl = ifelse(v_in < v_max, beschleunigungszeit(v_in, v_max), 0)) %>%
+  mutate(weg_beschl = ifelse(v_in < v_max, beschleunigungsweg(v_in, v_max), 0)) %>%
+  mutate(zeit_brems = ifelse(v_max > v_max_next, bremszeit(v_max, v_max_next), 0)) %>%
+  mutate(weg_brems = ifelse(v_max > v_max_next, bremsweg(v_max, v_max_next), 0)) %>%
+  mutate(weg_normal = laenge_kombi - weg_beschl - weg_brems) %>%
+  mutate(zeit_normal = weg_normal * 3.6 / v_max) %>%
+  mutate(zeit = zeit_beschl + zeit_brems + zeit_normal) %>%
+  mutate(weg = weg_beschl + weg_brems + weg_normal) %>%
+  ungroup() %>%
+  print()
+
+# zeit = 5828 s = 97,13 min = 01:37 reale Zeit ist 01:50 
+
+
